@@ -1,0 +1,18 @@
+# Cache
+**/.pytest_cache
+**/__pycache__
+
+# Model checkpoints
+AI/models/arcface_r100.onnx
+AI/models/yolov7-face.pt
+
+# Database
+AI/data/faces/
+AI/database/embeddings.npz
+
+# Debug scripts
+AI/scritps/run_tests.sh
+AI/tests/
+
+# Draft documents
+AI/INSTRUCTION.md

@@ -1,0 +1,29 @@
+# Core
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.24.0
+
+# Image processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# Face alignment
+scikit-image>=0.21.0
+dlib>=19.24.0
+
+# YOLOv7-Face repo
+pandas==2.3.3
+seaborn==0.13.2
+
+# ArcFace inference (ONNX runtime)
+onnxruntime>=1.16.0         # CPU
+# onnxruntime-gpu>=1.16.0   # GPU — uncomment if CUDA is available
+
+# InsightFace model download utility
+insightface>=0.7.3
+
+# Similarity / math
+scipy>=1.11.0
+
+# Progress
+tqdm>=4.66.0
