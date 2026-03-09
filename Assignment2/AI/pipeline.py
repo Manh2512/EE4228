@@ -16,6 +16,8 @@ Usage examples:
       --input photo.jpg \
       --output result.jpg \
       --detector-weights  models/yolov7-face.pt \
+      --detector-mode pytorch \
+      --yolov7-dir models/yolov7-face \
       --recognizer-weights models/arcface_r100.onnx \
       --database          database/embeddings.npz
 
@@ -24,6 +26,8 @@ Usage examples:
       --mode video \
       --input 0 \
       --detector-weights  models/yolov7-face.pt \
+      --detector-mode pytorch \
+      --yolov7-dir models/yolov7-face \
       --recognizer-weights models/arcface_r100.onnx \
       --database          database/embeddings.npz
 
@@ -33,6 +37,8 @@ Usage examples:
       --input clip.mp4 \
       --output annotated.mp4 \
       --detector-weights  models/yolov7-face.pt \
+      --detector-mode pytorch \
+      --yolov7-dir models/yolov7-face \
       --recognizer-weights models/arcface_r100.onnx \
       --database          database/embeddings.npz
 """
