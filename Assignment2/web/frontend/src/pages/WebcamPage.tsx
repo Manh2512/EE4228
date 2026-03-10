@@ -33,7 +33,7 @@ export default function WebcamPage() {
 
     // Start webcam
     navigator.mediaDevices
-      .getUserMedia({ video: true })
+      .getUserMedia({ video: { width: 640, height: 640 } })
       .then((s) => {
         // Stop any previously opened stream (StrictMode double-invoke guard)
         streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -67,9 +67,9 @@ export default function WebcamPage() {
       const now = performance.now();
       if (!pausedRef.current && video.videoWidth > 0 && now-lastSendRef.current >= INTERVAL_TIME_MS) {
         lastSendRef.current = now;
-        canvas.width  = video.videoWidth;
-        canvas.height = video.videoHeight;
-        canvas.getContext("2d")!.drawImage(video, 0, 0);
+        canvas.width  = 640;
+        canvas.height = 640;
+        canvas.getContext("2d")!.drawImage(video, 0, 0, 640, 640);
         canvas.toBlob(
           (blob) => { if (blob) ws.send(blob); },
           "image/jpeg",
