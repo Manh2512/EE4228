@@ -2,6 +2,9 @@
 **/.pytest_cache
 **/__pycache__
 
+# packages
+web/frontend/node_modules/
+
 # Model checkpoints
 AI/models/arcface_r100.onnx
 AI/models/yolov7-face.pt

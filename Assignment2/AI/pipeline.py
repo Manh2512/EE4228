@@ -230,8 +230,10 @@ def run_video(args: argparse.Namespace) -> None:
     pipeline = build_pipeline(args)
 
     writer: cv2.VideoWriter | None = None
+    max_fps = 20 # keep fps low to accelerate processing step
+    
     if args.output:
-        fps    = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        fps    = cap.get(cv2.CAP_PROP_FPS) or max_fps
         width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
