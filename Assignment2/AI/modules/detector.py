@@ -144,7 +144,9 @@ def non_max_suppression_face(
         box        = xywh2xyxy(x[:, :4])
         conf       = x[:, 5:6]
         class_ids  = torch.zeros_like(conf)  # single class: face = 0
-        landmarks  = x[:, 6:]               # (N, 10)
+        landmarks  = x[:, 6:]               # (N, 15)
+        keep_indices = [0, 1, 3, 4, 6, 7, 9, 10, 12, 13]
+        landmarks = landmarks[:, keep_indices]  # keep only xy of each landmark
 
         det = torch.cat([box, conf, class_ids, landmarks], dim=1)
         det = det[conf.view(-1) > conf_thres]
