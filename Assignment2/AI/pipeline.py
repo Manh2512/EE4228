@@ -6,8 +6,8 @@ Modes:
   --mode video : Process a video file (or webcam index) in real-time.
 
 Result semantics
-  - MATCH   (res.matched=True):  cos(θ) >= threshold → identity = gallery name (e.g. "John_Doe")
-  - NO MATCH (res.matched=False): cos(θ) < threshold  → identity = "Unknown"
+  - MATCH    (res.matched=True):  score meets threshold → identity = gallery name (e.g. "John_Doe")
+  - NO MATCH (res.matched=False): score below threshold → identity = "Unknown"
 
 Usage examples:
   # Single image
@@ -15,7 +15,7 @@ Usage examples:
       --mode image \
       --input photo.jpg \
       --output result.jpg \
-      --detector-weights  models/yolov7-face.pt \
+      --detector-weights  models/yolov7-tiny-face.pt \
       --detector-mode pytorch \
       --yolov7-dir models/yolov7-face \
       --recognizer-weights models/arcface_r100.onnx \
@@ -25,7 +25,7 @@ Usage examples:
   python pipeline.py \
       --mode video \
       --input 0 \
-      --detector-weights  models/yolov7-face.pt \
+      --detector-weights  models/yolov7-tiny-face.pt \
       --detector-mode pytorch \
       --yolov7-dir models/yolov7-face \
       --recognizer-weights models/arcface_r100.onnx \
@@ -36,7 +36,7 @@ Usage examples:
       --mode video \
       --input clip.mp4 \
       --output annotated.mp4 \
-      --detector-weights  models/yolov7-face.pt \
+      --detector-weights  models/yolov7-tiny-face.pt \
       --detector-mode pytorch \
       --yolov7-dir models/yolov7-face \
       --recognizer-weights models/arcface_r100.onnx \
@@ -93,11 +93,11 @@ def draw_results(
 
         # Identity label with background rectangle for readability
         label = f"{res.identity} ({res.score:.2f})"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2)
         cv2.rectangle(out, (x1, y1 - th - 6), (x1 + tw, y1), color, -1)
         cv2.putText(
             out, label, (x1, y1 - 4),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA,
+            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2, cv2.LINE_AA,
         )
 
     return out
@@ -155,16 +155,14 @@ class FaceRecognitionPipeline:
 
             if aligned is None:
                 # Alignment degenerated (e.g. collinear landmarks) → Unknown
-                match_results.append(
-                    MatchResult("Unknown", 0.0, float(np.degrees(np.arccos(0.0))), self.matcher.threshold, False)
-                )
+                match_results.append(self.matcher.unknown_result())
                 continue
 
             embedding = self.recognizer.get_embedding(aligned)
             result    = self.matcher.match(embedding)
             match_results.append(result)
 
-            print(result)
+            print(f"Face {len(match_results)}: {result}")
 
         return detections, match_results
 
@@ -194,7 +192,8 @@ def build_pipeline(args: argparse.Namespace) -> FaceRecognitionPipeline:
         metric    = args.metric,
     )
 
-    return FaceRecognitionPipeline(detector, FaceAligner(), recognizer, matcher)
+    aligner = FaceAligner(output_size=112)
+    return FaceRecognitionPipeline(detector, aligner, recognizer, matcher)
 
 
 def run_image(args: argparse.Namespace) -> None:
@@ -282,10 +281,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--img-size",             type=int,   default=640)
     p.add_argument("--conf-thres",           type=float, default=0.25)
     p.add_argument("--iou-thres",            type=float, default=0.45)
-    p.add_argument("--threshold",            type=float, default=0.40,
-                                             help="ArcFace angular similarity threshold: cos(θ) ≥ threshold → MATCH "
-                                                  "(default 0.40 ≈ θ ≤ 66°)")
-    p.add_argument("--metric",               default="arcface", choices=["arcface"])
+    p.add_argument("--threshold",            type=float, default=None,
+                                             help="Match decision threshold. Defaults: 0.40 for cosine (cos θ ≥ threshold), "
+                                                  "1.10 for euclidean (L2 dist ≤ threshold).")
+    p.add_argument("--metric",               default="cosine", choices=["cosine", "euclidean"],
+                                             help="Similarity metric: 'cosine' (default) or 'euclidean'.")
     return p.parse_args()
 
 
