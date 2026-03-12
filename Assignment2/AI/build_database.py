@@ -2,20 +2,21 @@
 build_database.py — Gallery embedding database builder.
 
 Scans  data/faces/<PersonName>/<image>.{jpg,jpeg,png}
-Detects, aligns, and embeds each face image, then averages all embeddings
-per identity and saves the result to  database/embeddings.npz.
+Detects, aligns, and embeds each face image, storing one embedding vector
+per image, and saves the result to  database/embeddings.npz.
 
 Usage:
     python build_database.py \
-        --detector-weights  models/yolov7-face.pt \
+        --detector-weights  models/yolov7-tiny-face.pt \
         --recognizer-weights models/arcface_r100.onnx \
         --faces-dir         data/faces \
         --output            database/embeddings.npz \
-        [--detector-mode    pytorch|onnx] \
-        [--yolov7-dir       path/to/yolov7-face] \
+        --detector-mode    pytorch \
+        --yolov7-dir       models/yolov7-face \
         [--img-size         640] \
-        [--conf-thres       0.25] \
-        [--metric           cosine]
+        [--conf-thres       0.25]
+
+Alignment is performed using the 5-point landmarks from YOLOv7-Face
 """
 
 from __future__ import annotations
@@ -70,14 +71,14 @@ def embed_identity(
     aligner:  FaceAligner,
     recognizer: ArcFaceRecognizer,
     identity: str,
-) -> np.ndarray | None:
+) -> list[np.ndarray]:
     """
     Process all images for one identity.
 
-    Returns the averaged, L2-renormalized 512-D embedding, or None if no
-    valid face was found in any image.
+    Returns one L2-normalized 512-D embedding per successfully processed image.
+    Returns an empty list if no valid face was found in any image.
     """
-    accum: list[np.ndarray] = []
+    embeddings: list[np.ndarray] = []
 
     for img_path in images:
         bgr = cv2.imread(str(img_path))
@@ -98,20 +99,13 @@ def embed_identity(
             print(f"  [WARN] Alignment failed for {img_path.name}, skipping.", file=sys.stderr)
             continue
 
-        embedding = recognizer.get_embedding(aligned)
-        accum.append(embedding)
+        embeddings.append(recognizer.get_embedding(aligned))
 
-    if not accum:
-        return None
-
-    # Average all embeddings and re-normalize
-    mean_emb = np.mean(np.stack(accum, axis=0), axis=0)
-    norm     = np.linalg.norm(mean_emb)
-    return mean_emb / (norm + 1e-6)
+    return embeddings
 
 
 def build_database(args: argparse.Namespace) -> None:
-    faces_dir  = Path(args.faces_dir)
+    faces_dir   = Path(args.faces_dir)
     output_path = Path(args.output)
 
     if not faces_dir.exists():
@@ -138,7 +132,7 @@ def build_database(args: argparse.Namespace) -> None:
 
     print("Loading recognizer …")
     recognizer = ArcFaceRecognizer(model_path=args.recognizer_weights)
-    aligner    = FaceAligner()
+    aligner    = FaceAligner(output_size=112)
 
     # ------------------------------------------------------------------ #
     # Collect images
@@ -161,12 +155,13 @@ def build_database(args: argparse.Namespace) -> None:
     all_embeddings : list[np.ndarray] = []
 
     for identity, images in tqdm(gallery.items(), desc="Embedding identities"):
-        emb = embed_identity(images, detector, aligner, recognizer, identity)
-        if emb is None:
+        embs = embed_identity(images, detector, aligner, recognizer, identity)
+        if not embs:
             print(f"  [ERROR] No valid embedding for '{identity}', skipping entirely.", file=sys.stderr)
             continue
-        all_names.append(identity)
-        all_embeddings.append(emb)
+        for emb in embs:
+            all_names.append(identity)
+            all_embeddings.append(emb)
 
     if not all_embeddings:
         raise RuntimeError("No embeddings were generated. Check model weights and face images.")
@@ -178,7 +173,8 @@ def build_database(args: argparse.Namespace) -> None:
 
     print(
         f"\nDatabase saved to {output_path}\n"
-        f"  Identities : {len(all_names)}\n"
+        f"  Identities : {len(set(all_names))}\n"
+        f"  Total embeddings : {len(all_names)}\n"
         f"  Embedding dim: {embeddings_matrix.shape[1]}"
     )
 
