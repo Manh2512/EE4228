@@ -66,6 +66,15 @@ from modules.matcher    import FaceMatcher, MatchResult
 _COLOR_MATCH    = (0, 200, 0)   # green  — identity confirmed
 _COLOR_NO_MATCH = (0, 0, 220)   # red    — below threshold / "Unknown"
 
+# 5-point landmark colors: left eye, right eye, nose, left mouth, right mouth
+_LANDMARK_COLORS = [
+    (255,   0, 255),  # left eye       — magenta
+    (  0, 128, 255),  # right eye      — orange
+    (  0, 255, 255),  # nose tip       — yellow
+    (  0, 255,   0),  # left mouth     — green
+    (255, 255,   0),  # right mouth    — cyan
+]
+
 
 def draw_results(
     frame: np.ndarray,
@@ -87,9 +96,10 @@ def draw_results(
         # Bounding box
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
 
-        # Facial landmarks
-        for lx, ly in det["landmarks"]:
-            cv2.circle(out, (int(lx), int(ly)), 3, (0, 255, 255), -1)
+        # Facial landmarks (5-point: left eye, right eye, nose, left mouth, right mouth)
+        for i, (lx, ly) in enumerate(det["landmarks"]):
+            color_lm = _LANDMARK_COLORS[i]
+            cv2.circle(out, (int(lx), int(ly)), 4, color_lm, -1)
 
         # Identity label with background rectangle for readability
         label = f"{res.identity} ({res.score:.2f})"
@@ -220,6 +230,55 @@ def run_image(args: argparse.Namespace) -> None:
         cv2.destroyAllWindows()
 
 
+def run_folder(args: argparse.Namespace) -> None:
+    folder = Path(args.input)
+    if not folder.is_dir():
+        sys.exit(f"Not a directory: {args.input}")
+
+    image_paths = sorted(
+        p for p in folder.iterdir()
+        if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp")
+    )
+    if not image_paths:
+        sys.exit(f"No images found in: {args.input}")
+
+    out_dir: Path | None = None
+    if args.output:
+        out_dir = Path(args.output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    pipeline = build_pipeline(args)
+
+    total_faces = 0
+    for img_path in image_paths:
+        frame = cv2.imread(str(img_path))
+        if frame is None:
+            print(f"[WARN] Cannot read {img_path}, skipping.")
+            continue
+
+        t0 = time.perf_counter()
+        detections, results = pipeline.run(frame)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        total_faces += len(detections)
+        print(f"{img_path.name}: {len(detections)} face(s) in {elapsed_ms:.1f} ms")
+
+        annotated = draw_results(frame, detections, results)
+
+        if out_dir:
+            cv2.imwrite(str(out_dir / img_path.name), annotated)
+        else:
+            cv2.imshow(f"Face Recognition — {img_path.name}", annotated)
+            key = cv2.waitKey(0) & 0xFF
+            cv2.destroyAllWindows()
+            if key == ord("q"):
+                break
+
+    print(f"\nProcessed {len(image_paths)} image(s), {total_faces} face(s) total.")
+    if out_dir:
+        print(f"Annotated images saved → {out_dir}")
+
+
 def run_video(args: argparse.Namespace) -> None:
     source = int(args.input) if args.input.isdigit() else args.input
     cap    = cv2.VideoCapture(source)
@@ -270,7 +329,7 @@ def run_video(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Face Detection and Recognition Pipeline")
-    p.add_argument("--mode",                 required=True, choices=["image", "video"])
+    p.add_argument("--mode",                 required=True, choices=["image", "video", "folder"])
     p.add_argument("--input",                required=True, help="Image/video path or webcam index (0, 1 …)")
     p.add_argument("--output",               default=None,  help="Output path (optional; shows window if omitted)")
     p.add_argument("--detector-weights",     required=True, help=".pt or .onnx YOLOv7-Face weights")
@@ -293,5 +352,7 @@ if __name__ == "__main__":
     args = parse_args()
     if args.mode == "image":
         run_image(args)
+    elif args.mode == "folder":
+        run_folder(args)
     else:
         run_video(args)
