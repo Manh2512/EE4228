@@ -98,7 +98,7 @@ def draw_results(
 
         # Facial landmarks (5-point: left eye, right eye, nose, left mouth, right mouth)
         for i, (lx, ly) in enumerate(det["landmarks"]):
-            color_lm = _LANDMARK_COLORS[i % len(_LANDMARK_COLORS)]
+            color_lm = _LANDMARK_COLORS[i]
             cv2.circle(out, (int(lx), int(ly)), 4, color_lm, -1)
 
         # Identity label with background rectangle for readability
@@ -339,9 +339,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--detector-mode",        default=None,  choices=["pytorch", "onnx"])
     p.add_argument("--yolov7-dir",           default=None,  help="yolov7-face repo root (pytorch mode only)")
     p.add_argument("--img-size",             type=int,   default=640)
-    p.add_argument("--conf-thres",           type=float, default=0.6)
-    p.add_argument("--iou-thres",            type=float, default=0.55)
-    p.add_argument("--threshold",            type=float, default=0.6,
+    p.add_argument("--conf-thres",           type=float, default=0.25)
+    p.add_argument("--iou-thres",            type=float, default=0.45)
+    p.add_argument("--threshold",            type=float, default=0.40,
                                              help="ArcFace angular similarity threshold: cos(θ) ≥ threshold → MATCH "
                                                   "(default 0.40 ≈ θ ≤ 66°)")
     p.add_argument("--metric",               default="arcface", choices=["arcface"])
