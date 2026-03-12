@@ -13,7 +13,7 @@ Deliverables
   # Set-up
   1. Input images to `/data/faces` folder.
   2. Download feature extraction model for face recognition [ArcFace](https://drive.google.com/file/d/1Hc5zUfBATaXUgcU2haUNa7dcaZSw95h2/view?usp=sharing). Place the checkpoint in `models/`.
-  3. Download yolov7-face [checkpoint](https://drive.google.com/file/d/1oIaGXFd4goyBvB1mYDK24GLof53H9ZYo/view?usp=sharing). Place the checkpoint in `models/`.
+  3. Download yolov7-tiny-face [checkpoint](https://drive.google.com/file/d/1oIaGXFd4goyBvB1mYDK24GLof53H9ZYo/view?usp=sharing). Place the checkpoint in `models/` as `yolov7-tiny-face.pt`.
   4. Create Conda environment and install dependencies.
   5. Build gallery database.
   6. Run inference on an image.
@@ -21,8 +21,8 @@ Deliverables
   # 1. Build gallery database
   ```
   python build_database.py \
-    --detector-weights models/yolov7-face.pt \
-    --detector-weights models/yolov7-face.pt \
+    --detector-weights models/yolov7-tiny-face.pt \
+    --detector-mode pytorch \
     --yolov7-dir models/yolov7-face \
     --recognizer-weights models/arcface_r100.onnx
   ```
@@ -30,8 +30,8 @@ Deliverables
   # 2. Run inference on an image
   ```
   python pipeline.py --mode image --input photo.jpg \
-    -- detection-mode pytorch \
-    --detector-weights models/yolov7-face.pt \
+    --detector-mode pytorch \
+    --detector-weights models/yolov7-tiny-face.pt \
     --yolov7-dir models/yolov7-face \
     --recognizer-weights models/arcface_r100.onnx
   ```
