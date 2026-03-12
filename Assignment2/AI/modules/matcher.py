@@ -4,27 +4,25 @@ Embedding matching module.
 Compares a query embedding against a gallery of named embeddings and
 returns the best-matching identity, score, and MATCH / NO MATCH decision.
 
-Metric:
-  - 'arcface' (default): Additive Angular Margin similarity as described in
-    the ArcFace paper (Deng et al., CVPR 2019).
+Metrics:
+  - 'cosine' (default): Cosine similarity (ArcFace verification metric).
 
-    For L2-normalized embeddings e_q and e_db, the similarity score is:
+        score = cos(θ) = e_q · e_db          (both vectors L2-normalized)
 
-        score = cos(θ) = e_q · e_db
+    Range: [-1, 1]. Higher score → more similar. MATCH when score ≥ threshold.
+    Default threshold: 0.40 (≈ θ ≤ 66°).
 
-    where θ = arccos(e_q · e_db) is the geodesic angle between the two
-    feature vectors on the unit hypersphere.  Higher score → smaller angle →
-    more similar.  Range: [-1, 1].
+  - 'euclidean': L2 distance between embeddings.
 
-    This is the exact verification metric used in the ArcFace paper
-    (Section 4, LFW/YTF evaluation): the learned angular margin during
-    training makes the decision boundary in angle space tight, so
-    thresholding on cos(θ) at inference is the natural choice.
+        distance = ‖e_q − e_db‖₂
+
+    Range: [0, 2] for L2-normalized unit vectors. Lower distance → more similar.
+    MATCH when distance ≤ threshold. Default threshold: 1.10 (≈ cos θ = 0.40).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -33,62 +31,67 @@ import numpy as np
 @dataclass
 class MatchResult:
     identity: str
-    score: float          # cos(θ) ∈ [-1, 1]; higher = more similar
-    angle_deg: float      # θ in degrees; lower = more similar
-    threshold: float      # cos(θ) threshold for MATCH decision
+    score: float      # cosine: cos(θ) ∈ [-1, 1]; euclidean: L2 distance ∈ [0, 2]
+    threshold: float  # decision boundary (metric-dependent)
     matched: bool
+    metric: str = field(default="cosine")
 
     def __str__(self) -> str:
         result = "MATCH" if self.matched else "NO MATCH"
-        return (
-            f"Identity: {self.identity} | "
-            f"cos(θ): {self.score:.4f} | "
-            f"θ: {self.angle_deg:.2f}° | "
-            f"Threshold: {self.threshold:.4f} | "
-            f"Result: {result}"
-        )
+        if self.metric == "cosine":
+            return (
+                f"Identity: {self.identity} | "
+                f"cos(θ): {self.score:.4f} | "
+                f"Threshold: {self.threshold:.4f} | "
+                f"Result: {result}"
+            )
+        else:  # euclidean
+            return (
+                f"Identity: {self.identity} | "
+                f"L2 dist: {self.score:.4f} | "
+                f"Threshold: {self.threshold:.4f} | "
+                f"Result: {result}"
+            )
 
 
 class FaceMatcher:
     """
-    Match a query 512-D embedding against a pre-loaded gallery using the
-    ArcFace additive angular margin similarity metric.
+    Match a query 512-D embedding against a pre-loaded gallery.
 
-    Scoring formula (ArcFace paper, CVPR 2019):
+    Supported metrics:
 
-        score = cos(θ) = e_q · e_db          (both vectors L2-normalized)
-        θ     = arccos(score)                 (angle between embeddings)
+      'cosine'    — Cosine similarity: score = e_q · e_db (L2-normalized dot product).
+                    MATCH when score ≥ threshold. Default threshold: 0.40.
 
-    A face pair is declared MATCH when cos(θ) ≥ threshold, i.e. the angular
-    distance θ is below the corresponding angle arccos(threshold).
+      'euclidean' — L2 distance: distance = ‖e_q − e_db‖₂.
+                    MATCH when distance ≤ threshold. Default threshold: 1.10.
 
     Args:
         names:      Array of identity names, shape (N,).
         embeddings: L2-normalized embedding matrix, shape (N, 512), float32.
-        threshold:  cos(θ) decision boundary. Default 0.40 — a widely used
-                    operating point for ArcFace R100 on real-world data
-                    (corresponds to θ ≈ 66°).  Raise toward 1.0 for higher
-                    precision; lower toward 0.0 for higher recall.
-        metric:     Must be 'arcface' (the only supported metric).
+        threshold:  Decision boundary. Pass None to use the metric-specific default.
+        metric:     'cosine' or 'euclidean'.
     """
+
+    _DEFAULTS = {"cosine": 0.40, "euclidean": 1.10}
 
     def __init__(
         self,
         names: np.ndarray | list[str],
         embeddings: np.ndarray,
-        threshold: float = 0.40,
-        metric: Literal["arcface"] = "arcface",
+        threshold: float | None = None,
+        metric: Literal["cosine", "euclidean"] = "cosine",
     ) -> None:
+        if metric not in self._DEFAULTS:
+            raise ValueError(
+                f"Unknown metric: {metric!r}. "
+                "Choose 'cosine' or 'euclidean'."
+            )
         self.names      = np.asarray(names)
         self.embeddings = np.asarray(embeddings, dtype=np.float32)
-        self.threshold  = threshold
         self.metric     = metric
+        self.threshold  = threshold if threshold is not None else self._DEFAULTS[metric]
 
-        if self.metric != "arcface":
-            raise ValueError(
-                f"Unknown metric: {self.metric!r}. "
-                "Only 'arcface' (additive angular margin cosine similarity) is supported."
-            )
         if self.embeddings.ndim != 2:
             raise ValueError("embeddings must be 2-D (N, D)")
         if len(self.names) != len(self.embeddings):
@@ -107,8 +110,8 @@ class FaceMatcher:
     def from_npz(
         cls,
         path: str,
-        threshold: float = 0.40,
-        metric: str = "arcface",
+        threshold: float | None = None,
+        metric: str = "cosine",
     ) -> "FaceMatcher":
         """Load gallery from an .npz file produced by build_database.py."""
         data = np.load(path, allow_pickle=True)
@@ -131,78 +134,90 @@ class FaceMatcher:
             query_embedding: L2-normalized float32 array of shape (512,).
 
         Returns:
-            MatchResult with identity, cos(θ) score, angle in degrees,
-            threshold, and matched flag.
+            MatchResult with identity, score, threshold, and matched flag.
         """
         query = np.asarray(query_embedding, dtype=np.float32).ravel()
-        scores = self._compute_scores(query)          # cos(θ), shape (N,)
-        best_idx   = int(np.argmax(scores))
-        best_score = float(scores[best_idx])
-        best_angle = float(np.degrees(np.arccos(np.clip(best_score, -1.0, 1.0))))
+        internal_scores = self._internal_scores(query)   # higher = better
+        best_idx        = int(np.argmax(internal_scores))
+        best_score      = self._natural_score(internal_scores[best_idx])
 
-        if best_score >= self.threshold:
-            identity = str(self.names[best_idx])
-            matched  = True
-        else:
-            identity = "Unknown"
-            matched  = False
+        matched  = self._is_match(best_score)
+        identity = str(self.names[best_idx]) if matched else "Unknown"
 
         return MatchResult(
             identity=identity,
             score=best_score,
-            angle_deg=best_angle,
             threshold=self.threshold,
             matched=matched,
+            metric=self.metric,
         )
 
     def match_batch(self, query_embeddings: np.ndarray) -> list[MatchResult]:
-        """
-        Match multiple query embeddings in one vectorized call.
-
-        Args:
-            query_embeddings: float32 array of shape (M, 512), L2-normalized.
-
-        Returns:
-            List of MatchResult, one per row.
-        """
-        results = []
-        for emb in query_embeddings:
-            results.append(self.match(emb))
-        return results
+        """Match multiple query embeddings in one call."""
+        return [self.match(emb) for emb in query_embeddings]
 
     def top_k(self, query_embedding: np.ndarray, k: int = 3) -> list[MatchResult]:
         """
         Return the top-k best-matching identities (regardless of threshold).
-
-        Useful for debugging or when you need more than the single best match.
         """
         query  = np.asarray(query_embedding, dtype=np.float32).ravel()
-        scores = self._compute_scores(query)
+        scores = self._internal_scores(query)
         k      = min(k, len(scores))
         idxs   = np.argsort(scores)[::-1][:k]
 
         return [
             MatchResult(
                 identity=str(self.names[i]),
-                score=float(scores[i]),
-                angle_deg=float(np.degrees(np.arccos(np.clip(float(scores[i]), -1.0, 1.0)))),
+                score=self._natural_score(scores[i]),
                 threshold=self.threshold,
-                matched=float(scores[i]) >= self.threshold,
+                matched=self._is_match(self._natural_score(scores[i])),
+                metric=self.metric,
             )
             for i in idxs
         ]
+
+    def unknown_result(self) -> MatchResult:
+        """Return a sentinel MatchResult for cases where matching cannot proceed."""
+        worst = -1.0 if self.metric == "cosine" else 2.0
+        return MatchResult("Unknown", worst, self.threshold, False, self.metric)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    def _compute_scores(self, query: np.ndarray) -> np.ndarray:
+    def all_scores(self, query_embedding: np.ndarray) -> list[tuple[str, float]]:
         """
-        Compute ArcFace angular similarity scores for all gallery entries.
+        Return (name, score) for every gallery entry, sorted best-first.
 
-        Returns cos(θ) = e_q · e_db for each gallery embedding, shape (N,).
-        Both query and gallery embeddings must be L2-normalized so that the
-        dot product equals the cosine of the angle between them.
+        Score semantics match the chosen metric:
+          cosine    → cos(θ), higher = more similar
+          euclidean → L2 distance, lower = more similar
         """
-        # Dot product of unit vectors = cos(θ), the ArcFace similarity metric
-        return self.embeddings @ query
+        query  = np.asarray(query_embedding, dtype=np.float32).ravel()
+        scores = self._internal_scores(query)
+        order  = np.argsort(scores)[::-1]   # best first for both metrics
+        return [
+            (str(self.names[i]), self._natural_score(scores[i]))
+            for i in order
+        ]
+
+    def _internal_scores(self, query: np.ndarray) -> np.ndarray:
+        """Compute scores where higher always means more similar (for argmax)."""
+        if self.metric == "cosine":
+            return self.embeddings @ query
+        else:  # euclidean — return negative distance so argmax picks closest
+            diff = self.embeddings - query
+            return -np.linalg.norm(diff, axis=1)
+
+    def _natural_score(self, internal: float) -> float:
+        """Convert internal score to the natural metric value shown to users."""
+        if self.metric == "cosine":
+            return float(internal)
+        else:  # euclidean: internal is -distance
+            return float(-internal)
+
+    def _is_match(self, natural_score: float) -> bool:
+        if self.metric == "cosine":
+            return natural_score >= self.threshold
+        else:  # euclidean: match when distance is small enough
+            return natural_score <= self.threshold
