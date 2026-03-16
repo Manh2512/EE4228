@@ -19,6 +19,10 @@ seaborn==0.13.2
 onnxruntime>=1.16.0         # CPU
 # onnxruntime-gpu>=1.16.0   # GPU — uncomment if CUDA is available
 
+# ArcFace finetuning
+onnx2torch==1.5.15
+onnxscript==0.6.2
+
 # InsightFace model download utility
 insightface>=0.7.3
 
