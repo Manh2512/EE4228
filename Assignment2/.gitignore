@@ -8,14 +8,18 @@ web/frontend/node_modules/
 # Model checkpoints
 AI/models/arcface_r100.onnx
 AI/models/yolov7-face.pt
+AI/models/yolov7-tiny-face.pt
 
 # Database
 AI/data/faces/
 AI/database/embeddings.npz
+AI/runs/
 
 # Debug scripts
 AI/scritps/run_tests.sh
 AI/tests/
+AI/visualize_embeddings.py
+AI/debug_pipeline.py
 
 # Draft documents
 AI/INSTRUCTION.md
