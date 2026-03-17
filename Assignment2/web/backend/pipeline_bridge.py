@@ -32,7 +32,7 @@ from pipeline           import FaceRecognitionPipeline, draw_results
 # ---------------------------------------------------------------------------
 # Config — paths relative to Assignment2/ root
 # ---------------------------------------------------------------------------
-_DETECTOR_WEIGHTS   = str(_ROOT / "AI" / "models" / "yolov7-tiny-face.pt")
+_DETECTOR_WEIGHTS   = str(_ROOT / "AI" / "models" / "yolov7-face.pt")
 _YOLOV7_DIR         = str(_ROOT / "AI" / "models" / "yolov7-face")
 _RECOGNIZER_WEIGHTS = str(_ROOT / "AI" / "models" / "arcface_r100.onnx")
 _DATABASE           = str(_ROOT / "AI" / "database" / "embeddings.npz")
@@ -64,8 +64,7 @@ def get_pipeline() -> FaceRecognitionPipeline:
             threshold = 0.40,
             metric    = "cosine",
         )
-        aligner   = FaceAligner()
-        _pipeline = FaceRecognitionPipeline(detector, aligner, recognizer, matcher)
+        _pipeline = FaceRecognitionPipeline(detector, FaceAligner(), recognizer, matcher)
         print("[bridge] Pipeline ready.")
     return _pipeline
 
