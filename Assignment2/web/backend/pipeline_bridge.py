@@ -62,7 +62,7 @@ def get_pipeline() -> FaceRecognitionPipeline:
         matcher = FaceMatcher.from_npz(
             path      = _DATABASE,
             threshold = 0.40,
-            metric    = "arcface",
+            metric    = "cosine",
         )
         _pipeline = FaceRecognitionPipeline(detector, FaceAligner(), recognizer, matcher)
         print("[bridge] Pipeline ready.")
@@ -86,7 +86,7 @@ def process_frame(bgr: np.ndarray) -> tuple[np.ndarray, list[dict]]:
         {
             "identity":  res.identity,
             "score":     round(float(res.score), 4),
-            "angle_deg": round(float(res.angle_deg), 2),
+            "threshold": round(float(res.threshold), 2),
             "result":    "MATCH" if res.matched else "NO MATCH",
             "bbox":      [int(v) for v in det["bbox"]],
         }
