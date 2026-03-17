@@ -85,11 +85,11 @@ def process_frame(bgr: np.ndarray) -> tuple[np.ndarray, list[dict]]:
 
     faces = [
         {
-            "identity": res.identity,
-            "score":    round(float(res.score), 4),
-            "metric":   res.metric,
-            "result":   "MATCH" if res.matched else "NO MATCH",
-            "bbox":     [int(v) for v in det["bbox"]],
+            "identity":  res.identity,
+            "score":     round(float(res.score), 4),
+            "threshold": round(float(res.threshold), 2),
+            "result":    "MATCH" if res.matched else "NO MATCH",
+            "bbox":      [int(v) for v in det["bbox"]],
         }
         for det, res in zip(detections, match_results)
     ]

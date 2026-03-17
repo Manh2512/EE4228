@@ -40,7 +40,7 @@ app.add_middleware(
 _jobs: dict[str, dict] = {}
 
 _TMP = Path("/tmp/ee4228")
-_TMP.mkdir(exist_ok=True)
+_TMP.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
