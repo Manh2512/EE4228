@@ -19,7 +19,6 @@ Outputs written to <output_dir>/:
     checkpoint_epoch_NNNN.pt   — periodic checkpoints
     best_model.pt              — lowest validation-loss checkpoint
     final_model.pt             — weights after the last epoch
-    final_model.onnx           — ONNX export (requires --export-onnx)
     finetune.log               — full training log (INFO→stdout, DEBUG→file)
 
 Pre-trained weight loading
@@ -324,22 +323,6 @@ def load_pretrained(
     logger.warning(f"Unknown pretrained file extension '{suffix}' — skipping")
 
 
-def export_onnx(backbone: IResNet100, output_path: Path, logger: logging.Logger) -> None:
-    """Export *backbone* to ONNX with a dynamic batch axis."""
-    backbone.eval().cpu()
-    dummy = torch.randn(1, 3, 112, 112)
-    torch.onnx.export(
-        backbone,
-        dummy,
-        str(output_path),
-        input_names=['input'],
-        output_names=['embedding'],
-        dynamic_axes={'input': {0: 'batch_size'}, 'embedding': {0: 'batch_size'}},
-        opset_version=11,
-        do_constant_folding=True,
-    )
-    logger.info(f"ONNX export saved: {output_path}")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Main entry point
@@ -627,9 +610,6 @@ def run(args: argparse.Namespace) -> None:
     )
     logger.info(f"Final model saved: {output_dir / 'final_model.pt'}")
 
-    if args.export_onnx:
-        export_onnx(backbone, output_dir / 'final_model.onnx', logger)
-
     logger.info("=" * 70)
     logger.info("Training complete")
     logger.info(f"  Best val loss : {best_val_loss:.4f}")
@@ -670,10 +650,6 @@ def _parse_args() -> argparse.Namespace:
     io.add_argument(
         '--resume', default=None, metavar='CKPT',
         help='Checkpoint .pt to resume training from',
-    )
-    io.add_argument(
-        '--export-onnx', action='store_true',
-        help='Export the final backbone to ONNX after training',
     )
     io.add_argument(
         '--skip-preprocessing', action='store_true',
