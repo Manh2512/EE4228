@@ -32,7 +32,7 @@ from pipeline           import FaceRecognitionPipeline, draw_results
 # ---------------------------------------------------------------------------
 # Config — paths relative to Assignment2/ root
 # ---------------------------------------------------------------------------
-_DETECTOR_WEIGHTS   = str(_ROOT / "AI" / "models" / "yolov7-face.pt")
+_DETECTOR_WEIGHTS   = str(_ROOT / "AI" / "models" / "yolov7-tiny-face.pt")
 _YOLOV7_DIR         = str(_ROOT / "AI" / "models" / "yolov7-face")
 _RECOGNIZER_WEIGHTS = str(_ROOT / "AI" / "models" / "arcface_r100.onnx")
 _DATABASE           = str(_ROOT / "AI" / "database" / "embeddings.npz")
@@ -62,9 +62,10 @@ def get_pipeline() -> FaceRecognitionPipeline:
         matcher = FaceMatcher.from_npz(
             path      = _DATABASE,
             threshold = 0.40,
-            metric    = "arcface",
+            metric    = "cosine",
         )
-        _pipeline = FaceRecognitionPipeline(detector, FaceAligner(), recognizer, matcher)
+        aligner   = FaceAligner()
+        _pipeline = FaceRecognitionPipeline(detector, aligner, recognizer, matcher)
         print("[bridge] Pipeline ready.")
     return _pipeline
 
@@ -84,11 +85,11 @@ def process_frame(bgr: np.ndarray) -> tuple[np.ndarray, list[dict]]:
 
     faces = [
         {
-            "identity":  res.identity,
-            "score":     round(float(res.score), 4),
-            "angle_deg": round(float(res.angle_deg), 2),
-            "result":    "MATCH" if res.matched else "NO MATCH",
-            "bbox":      [int(v) for v in det["bbox"]],
+            "identity": res.identity,
+            "score":    round(float(res.score), 4),
+            "metric":   res.metric,
+            "result":   "MATCH" if res.matched else "NO MATCH",
+            "bbox":     [int(v) for v in det["bbox"]],
         }
         for det, res in zip(detections, match_results)
     ]
