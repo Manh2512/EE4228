@@ -452,9 +452,20 @@ def run(args: argparse.Namespace) -> None:
     if args.pretrained:
         load_pretrained(backbone, Path(args.pretrained), device, logger)
 
+    # ── Freeze stem + stage1–3; train only stage4, output_head, and head ─────
+    for module in (backbone.stem, backbone.stage1, backbone.stage2, backbone.stage3):
+        for p in module.parameters():
+            p.requires_grad = False
+
+    trainable_backbone = [p for p in backbone.parameters() if p.requires_grad]
+    logger.info(
+        f"Frozen params: {sum(p.numel() for p in backbone.parameters() if not p.requires_grad):,} | "
+        f"Trainable backbone params: {sum(p.numel() for p in trainable_backbone):,}"
+    )
+
     # ── Optimiser ────────────────────────────────────────────────────────────
     param_groups = [
-        {'params': backbone.parameters()},
+        {'params': trainable_backbone},
         {'params': head.parameters()},
     ]
     if args.optimizer == 'sgd':
@@ -521,7 +532,7 @@ def run(args: argparse.Namespace) -> None:
             loss = head(emb, labels)
             loss.backward()
             nn.utils.clip_grad_norm_(
-                list(backbone.parameters()) + list(head.parameters()),
+                trainable_backbone + list(head.parameters()),
                 max_norm=5.0,
             )
             optimizer.step()
@@ -696,7 +707,7 @@ def _parse_args() -> argparse.Namespace:
         help='L2 regularisation coefficient (weight decay)',
     )
     hp.add_argument('--momentum',       type=float, default=0.9,  help='SGD momentum (ignored for AdamW)')
-    hp.add_argument('--optimizer',      choices=['sgd', 'adamw'], default='sgd', help='Optimiser')
+    hp.add_argument('--optimizer',      choices=['sgd', 'adamw'], default='adamw', help='Optimiser')
     hp.add_argument(
         '--scheduler', choices=['cosine', 'step', 'none'], default='cosine',
         help='LR scheduler — cosine annealing | multi-step (×0.1 at 60%% and 80%% of epochs) | none',
