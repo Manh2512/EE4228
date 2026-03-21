@@ -18,7 +18,6 @@ AI/runs/
 # Debug scripts
 AI/scritps/run_tests.sh
 AI/tests/
-AI/visualize_embeddings.py
 AI/debug_pipeline.py
 
 # Draft documents
