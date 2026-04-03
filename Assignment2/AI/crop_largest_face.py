@@ -30,33 +30,55 @@ if str(_HERE) not in sys.path:
 from modules.detector import YOLOv7FaceDetector
 
 
-CROP_SIZE = 640
+MIN_CROP_SIZE = 640
 
 
-def crop_640_around_bbox(image: np.ndarray, bbox: list[int]) -> np.ndarray:
-    """Return a 640×640 crop centred on *bbox* (x1,y1,x2,y2), clamped to image borders."""
+def crop_bbox_square(image: np.ndarray, bbox: list[int]) -> np.ndarray:
+    """
+    Crop a square region centered on the bounding box.
+    The square size = max(width, height) of the bbox.
+    """
     h, w = image.shape[:2]
     x1, y1, x2, y2 = bbox
-    cx = (x1 + x2) // 2
-    cy = (y1 + y2) // 2
 
-    half = CROP_SIZE // 2
-    left   = cx - half
-    top    = cy - half
-    right  = left + CROP_SIZE
-    bottom = top  + CROP_SIZE
+    # Clamp original bbox
+    x1 = max(0, min(w, x1))
+    y1 = max(0, min(h, y1))
+    x2 = max(0, min(w, x2))
+    y2 = max(0, min(h, y2))
 
-    # Shift window if it goes out of bounds.
+    # Compute center
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+
+    # Compute square size
+    bw = x2 - x1
+    bh = y2 - y1
+    side = max(bw, bh, MIN_CROP_SIZE)
+
+    half = side / 2
+
+    # New square coordinates
+    left   = int(cx - half)
+    right  = int(cx + half)
+    top    = int(cy - half)
+    bottom = int(cy + half)
+
+    # Shift if out of bounds
     if left < 0:
-        left, right = 0, CROP_SIZE
+        right -= left
+        left = 0
     if top < 0:
-        top, bottom = 0, CROP_SIZE
+        bottom -= top
+        top = 0
     if right > w:
-        right, left = w, w - CROP_SIZE
+        left -= (right - w)
+        right = w
     if bottom > h:
-        bottom, top = h, h - CROP_SIZE
+        top -= (bottom - h)
+        bottom = h
 
-    # Clamp to valid range (image smaller than 640).
+    # Final clamp
     left   = max(0, left)
     top    = max(0, top)
     right  = min(w, right)
@@ -73,15 +95,16 @@ def process_folder(
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
     photos = sorted(
         p for p in input_dir.iterdir()
-        if p.name.startswith("Photo") and p.suffix.lower() in exts
+        if p.suffix.lower() in exts
     )
+    print(f"Found {len(photos)} in {input_dir}")
 
     if not photos:
-        print(f"No 'Photo*' images found in {input_dir}")
+        print(f"No images found in {input_dir}")
         return
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    iter = 13
+    iter = 0
 
     for photo_path in photos:
         frame = cv2.imread(str(photo_path))
@@ -101,30 +124,28 @@ def process_folder(
             key=lambda d: (d["bbox"][2] - d["bbox"][0]) * (d["bbox"][3] - d["bbox"][1]),
         )
 
-        crop = crop_640_around_bbox(frame, largest["bbox"])
+        crop = crop_bbox_square(frame, largest["bbox"])
 
         # Pad to 640×640 if image was smaller than 640 in either dimension.
         ch, cw = crop.shape[:2]
-        if ch < CROP_SIZE or cw < CROP_SIZE:
-            padded = np.zeros((CROP_SIZE, CROP_SIZE, 3), dtype=frame.dtype)
+        if ch < MIN_CROP_SIZE or cw < MIN_CROP_SIZE:
+            padded = np.zeros((MIN_CROP_SIZE, MIN_CROP_SIZE, 3), dtype=frame.dtype)
             padded[:ch, :cw] = crop
             crop = padded
 
         out_path_name = str(output_dir) + f"/{iter}.png"
+        # save output image
         cv2.imwrite(out_path_name, crop)
         x1, y1, x2, y2 = largest["bbox"]
         print(f"  [OK]   {photo_path.name} → {out_path_name}  (face bbox {x1},{y1},{x2},{y2})")
         
         iter += 1
-        # delete the original photo
-        if os.path.exists(photo_path):
-            os.remove(photo_path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Crop 640×640 around largest face in Photo* images.")
     parser.add_argument("--input-dir",         required=True,  type=Path, help="Folder containing Photo* images")
-    parser.add_argument("--output-dir",        type=Path,      default=None, help="Where to save crops (default: <input-dir>/cropped)")
+    parser.add_argument("--output-dir",        required=True,  type=Path, default=None, help="Where to save crops (default: <input-dir>/cropped)")
     parser.add_argument("--detector-weights",  default="models/yolov7-face.pt")
     parser.add_argument("--detector-mode",     default="pytorch", choices=["pytorch", "onnx"])
     parser.add_argument("--yolov7-dir",        default="models/yolov7-face")
@@ -132,8 +153,8 @@ def main() -> None:
     parser.add_argument("--iou-thres",         type=float, default=0.5)
     args = parser.parse_args()
 
-    output_dir = args.output_dir or args.input_dir
-
+    output_dir = args.output_dir
+    
     print("Loading detector …")
     detector = YOLOv7FaceDetector(
         weights=args.detector_weights,

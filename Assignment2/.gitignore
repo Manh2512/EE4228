@@ -12,6 +12,7 @@ AI/models/yolov7-tiny-face.pt
 
 # Database
 AI/data/faces/
+AI/data/cropped_faces/
 AI/database/embeddings.npz
 AI/runs/
 
