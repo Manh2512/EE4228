@@ -287,37 +287,30 @@ def load_pretrained(
         return
 
     if suffix == '.onnx':
-        try:
-            import onnx
-            from onnx2torch import convert
-        except ImportError:
-            logger.warning(
-                "onnx2torch not installed — ONNX weight transfer skipped. "
-                "Install with:  pip install onnx2torch"
-            )
-            return
-        try:
-            logger.info(f"Converting ONNX → PyTorch for weight transfer: {path}")
-            onnx_model  = onnx.load(str(path))
-            torch_model = convert(onnx_model)
-            onnx_sd     = torch_model.state_dict()
-            own_sd      = backbone.state_dict()
-            matched, skipped = 0, 0
-            new_sd: dict = {}
-            for k, v in own_sd.items():
-                if k in onnx_sd and onnx_sd[k].shape == v.shape:
-                    new_sd[k] = onnx_sd[k]
-                    matched += 1
-                else:
-                    new_sd[k] = v
-                    skipped += 1
-            backbone.load_state_dict(new_sd)
-            logger.info(
-                f"ONNX weight transfer: {matched} matched, "
-                f"{skipped} skipped (shape mismatch or name not found)"
-            )
-        except Exception as exc:
-            logger.warning(f"ONNX weight transfer failed ({exc}) — using random init")
+        import onnx
+        from onnx import numpy_helper
+
+        onnx_model = onnx.load(str(path))
+        onnx_sd = {
+            init.name: torch.tensor(numpy_helper.to_array(init))
+            for init in onnx_model.graph.initializer
+        }
+
+        own_sd  = backbone.state_dict()
+        new_sd  = {}
+        matched = 0
+        skipped = 0
+
+        for k, v in own_sd.items():
+            if k in onnx_sd and onnx_sd[k].shape == v.shape:
+                new_sd[k] = onnx_sd[k]
+                matched += 1
+            else:
+                new_sd[k] = v
+                skipped += 1
+
+        backbone.load_state_dict(new_sd)
+        logger.info(f"ONNX weight transfer: {matched} matched, {skipped} skipped")
         return
 
     logger.warning(f"Unknown pretrained file extension '{suffix}' — skipping")
@@ -453,7 +446,7 @@ def run(args: argparse.Namespace) -> None:
         load_pretrained(backbone, Path(args.pretrained), device, logger)
 
     # ── Freeze stem + stage1–3; train only stage4, output_head, and head ─────
-    for module in (backbone.stem, backbone.stage1, backbone.stage2, backbone.stage3):
+    for module in (backbone.stem, backbone.layer1, backbone.layer2, backbone.layer3, backbone.layer4):
         for p in module.parameters():
             p.requires_grad = False
 
@@ -700,7 +693,7 @@ def _parse_args() -> argparse.Namespace:
     # Hyperparameters ──────────────────────────────────────────────────────────
     hp = P.add_argument_group('Hyperparameters')
     hp.add_argument('--epochs',         type=int,   default=30,   help='Training epochs')
-    hp.add_argument('--batch-size',     type=int,   default=32,   help='Mini-batch size')
+    hp.add_argument('--batch-size',     type=int,   default=16,   help='Mini-batch size')
     hp.add_argument('--lr',             type=float, default=1e-3, help='Initial learning rate')
     hp.add_argument(
         '--weight-decay', type=float, default=5e-4,
