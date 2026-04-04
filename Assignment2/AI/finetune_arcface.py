@@ -19,6 +19,7 @@ Outputs written to <output_dir>/:
     checkpoint_epoch_NNNN.pt   — periodic checkpoints
     best_model.pt              — lowest validation-loss checkpoint
     final_model.pt             — weights after the last epoch
+    loss_curve.png             — combined train/validation loss plot
     finetune.log               — full training log (INFO→stdout, DEBUG→file)
 
 Pre-trained weight loading
@@ -51,6 +52,9 @@ import time
 from pathlib import Path
 
 import cv2
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -295,6 +299,34 @@ def export_onnx(
         logger.error(f"ONNX export failed: {e}")
 
 
+def save_loss_curve(
+    output_dir: Path,
+    train_losses: list[float],
+    val_losses: list[float],
+    logger: logging.Logger,
+) -> None:
+    """Save a single train/validation loss curve image."""
+    if not train_losses or not val_losses:
+        logger.warning("Skipping loss curve plot because no loss history is available")
+        return
+
+    epochs = range(1, min(len(train_losses), len(val_losses)) + 1)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(list(epochs), train_losses[:len(epochs)], label='Train loss', linewidth=2)
+    ax.plot(list(epochs), val_losses[:len(epochs)], label='Val loss', linewidth=2)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Loss')
+    ax.set_title('ArcFace Fine-tuning Loss')
+    ax.grid(True, linestyle='--', alpha=0.35)
+    ax.legend()
+    fig.tight_layout()
+
+    plot_path = output_dir / 'loss_curve.png'
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    logger.info(f"Loss curve saved: {plot_path}")
+
+
 def load_pretrained(
     backbone: IResNet100,
     path: Path,
@@ -479,7 +511,7 @@ def run(args: argparse.Namespace) -> None:
         load_pretrained(backbone, Path(args.pretrained), device, logger)
 
     # ── Freeze stem + stage1–3; train only stage4, output_head, and head ─────
-    for module in (backbone.stem, backbone.layer1, backbone.layer2, backbone.layer3, backbone.layer4):
+    for module in (backbone.stem, backbone.layer1, backbone.layer2, backbone.layer3):
         for p in module.parameters():
             p.requires_grad = False
 
@@ -523,6 +555,8 @@ def run(args: argparse.Namespace) -> None:
     # ── Resume ───────────────────────────────────────────────────────────────
     start_epoch   = 1
     best_val_loss = float('inf')
+    train_history: list[float] = []
+    val_history: list[float] = []
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
@@ -533,6 +567,8 @@ def run(args: argparse.Namespace) -> None:
             scheduler.load_state_dict(ckpt['scheduler'])
         start_epoch   = ckpt['epoch'] + 1
         best_val_loss = ckpt.get('best_val_loss', float('inf'))
+        train_history = list(ckpt.get('train_history', []))
+        val_history   = list(ckpt.get('val_history', []))
         logger.info(f"Resumed from {args.resume} (next epoch: {start_epoch})")
 
     # ── Training loop ────────────────────────────────────────────────────────
@@ -596,6 +632,9 @@ def run(args: argparse.Namespace) -> None:
         val_loss = epoch_val_loss / max(n_val, 1)
         elapsed  = time.time() - t0
 
+        train_history.append(train_loss)
+        val_history.append(val_loss)
+
         if scheduler is not None:
             scheduler.step()
 
@@ -616,6 +655,8 @@ def run(args: argparse.Namespace) -> None:
             'scheduler':     scheduler.state_dict() if scheduler else None,
             'train_loss':    train_loss,
             'val_loss':      val_loss,
+            'train_history': train_history,
+            'val_history':   val_history,
             'best_val_loss': best_val_loss,
             'class_to_idx':  class_to_idx,
             'args':          vars(args),
@@ -639,6 +680,8 @@ def run(args: argparse.Namespace) -> None:
             'backbone':      backbone.state_dict(),
             'head':          head.state_dict(),
             'val_loss':      val_loss,
+            'train_history': train_history,
+            'val_history':   val_history,
             'best_val_loss': best_val_loss,
             'class_to_idx':  class_to_idx,
             'args':          vars(args),
@@ -646,6 +689,8 @@ def run(args: argparse.Namespace) -> None:
         output_dir / 'final_model.pt',
     )
     logger.info(f"Final model saved: {output_dir / 'final_model.pt'}")
+
+    save_loss_curve(output_dir, train_history, val_history, logger)
 
     if args.export_onnx:
         logger.info("Exporting backbone to ONNX …")
@@ -735,7 +780,7 @@ def _parse_args() -> argparse.Namespace:
     hp = P.add_argument_group('Hyperparameters')
     hp.add_argument('--epochs',         type=int,   default=30,   help='Training epochs')
     hp.add_argument('--batch-size',     type=int,   default=16,   help='Mini-batch size')
-    hp.add_argument('--lr',             type=float, default=1e-3, help='Initial learning rate')
+    hp.add_argument('--lr',             type=float, default=1e-4, help='Initial learning rate')
     hp.add_argument(
         '--weight-decay', type=float, default=5e-4,
         help='L2 regularisation coefficient (weight decay)',
@@ -770,7 +815,7 @@ def _parse_args() -> argparse.Namespace:
                      help='Disable color jitter')
     aug.add_argument('--aug-random-erasing', action='store_true', default=False,
                      help='Random erasing to simulate partial occlusion')
-    aug.add_argument('--aug-random-crop', action='store_true', default=False,
+    aug.add_argument('--aug-random-crop', action='store_true', default=True,
                      help='RandomResizedCrop (scale 0.85–1.0) instead of plain Resize')
 
     # Runtime ──────────────────────────────────────────────────────────────────
