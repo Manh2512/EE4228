@@ -262,6 +262,39 @@ def setup_logger(log_file: Path) -> logging.Logger:
     return logger
 
 
+def export_onnx(
+    backbone: IResNet100,
+    output_dir: Path,
+    logger: logging.Logger,
+) -> None:
+    """Export fine-tuned backbone to ONNX format.
+
+    The exported model accepts a (1, 3, 112, 112) input blob and outputs
+    a (1, 512) L2-normalized embedding. Compatible with ArcFaceRecognizer.
+    """
+    # Use absolute path to ensure .data file reference works correctly
+    onnx_path = (output_dir / 'backbone.onnx').resolve()
+
+    # Dummy input: (batch, C, H, W)
+    device = next(backbone.parameters()).device
+    dummy_input = torch.randn(1, 3, 112, 112, device=device)
+
+    try:
+        torch.onnx.export(
+            backbone,
+            dummy_input,
+            str(onnx_path),
+            input_names=['input'],
+            output_names=['output'],
+            opset_version=14,
+            do_constant_folding=True,
+            verbose=False,
+        )
+        logger.info(f"ONNX backbone exported: {onnx_path}")
+    except Exception as e:
+        logger.error(f"ONNX export failed: {e}")
+
+
 def load_pretrained(
     backbone: IResNet100,
     path: Path,
@@ -614,6 +647,10 @@ def run(args: argparse.Namespace) -> None:
     )
     logger.info(f"Final model saved: {output_dir / 'final_model.pt'}")
 
+    if args.export_onnx:
+        logger.info("Exporting backbone to ONNX …")
+        export_onnx(backbone, output_dir, logger)
+
     logger.info("=" * 70)
     logger.info("Training complete")
     logger.info(f"  Best val loss : {best_val_loss:.4f}")
@@ -664,6 +701,10 @@ def _parse_args() -> argparse.Namespace:
         '--debug-aligned-dir', default='data/aligned_debug', metavar='DIR',
         help='Directory under data/ where aligned chips are also saved for debugging '
              '(set to empty string to disable)',
+    )
+    io.add_argument(
+        '--export-onnx', action='store_true',
+        help='Export fine-tuned backbone to ONNX format after training',
     )
 
     # Detector (preprocessing) ─────────────────────────────────────────────────
