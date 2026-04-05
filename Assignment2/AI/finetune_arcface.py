@@ -32,14 +32,13 @@ Example
     python finetune_arcface.py \\
         --input-dir   data/faces \\
         --output-dir  runs/exp01 \\
-        --detector-weights  models/yolov7-face.pt \\
+        --detector-weights  models/yolov7-tiny-face.pt \\
         --detector-mode     pytorch \\
         --yolov7-dir        models/yolov7-face \\
         --pretrained        models/arcface_r100.onnx \\
         --device cuda \\
-        --epochs 30 --lr 1e-3 --weight-decay 5e-4 \\
-        --aug-flip --aug-color-jitter \\
-        --export-onnx
+        --epochs 30 --lr 1e-5 --weight-decay 5e-4 \\
+        --aug-flip --aug-color-jitter
 """
 
 from __future__ import annotations
