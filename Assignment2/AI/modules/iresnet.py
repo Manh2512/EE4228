@@ -1,19 +1,9 @@
 """
 iResNet100 backbone and ArcFace loss for face recognition.
-
-Architecture matches InsightFace's arcface_r100.onnx (IR-SE-100,
-trained on WebFace600K):
-  - Stem: Conv3×3 → BN → PReLU
-  - 4 stages with block counts [3, 13, 30, 3]  (≈ 100 layers total)
-  - SE channel-attention in every residual block
-  - Output head: BN → Dropout → Flatten → FC(512) → BN1d
-
-Input:  float32 NCHW, pixel values in [-1, 1], spatial size 112×112.
-Output: float32 (N, embedding_size), raw — caller must L2-normalise.
+Rewritten to match InsightFace's arcface_r100.onnx weight layout exactly.
 """
 
 import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,41 +14,36 @@ import torch.nn.functional as F
 # ──────────────────────────────────────────────────────────────────────────────
 
 class SEBlock(nn.Module):
-    """Squeeze-and-Excitation channel-wise attention."""
+    """SE block using Conv1x1 to match ONNX [C,1,1] weight layout."""
 
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channels, channels // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels, bias=False),
-            nn.Sigmoid(),
-        )
+        self.pool  = nn.AdaptiveAvgPool2d(1)
+        self.fc1   = nn.Conv2d(channels, channels // reduction, 1, bias=False)
+        self.relu  = nn.ReLU(inplace=True)
+        self.fc2   = nn.Conv2d(channels // reduction, channels, 1, bias=False)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, c, _, _ = x.shape
-        w = self.fc(self.pool(x).view(b, c)).view(b, c, 1, 1)
+        w = self.pool(x)
+        w = self.sigmoid(self.fc2(self.relu(self.fc1(w))))
         return x * w
 
 
 class IRBlock(nn.Module):
-    """Improved Residual Block (pre-activation BN, PReLU, optional SE).
-
-    Differs from a standard ResNet block in two ways:
-      1. BN is applied *before* the first convolution (pre-activation style).
-      2. Activation is PReLU (learnable slope) instead of ReLU.
+    """IR block matching ONNX structure:
+       BN1 → Conv1 → PReLU → Conv2 → BN2 → SE → + shortcut
+       Note: only ONE bn (bn1) before conv1, no bn0.
     """
 
     def __init__(self, in_ch: int, out_ch: int, stride: int = 1, use_se: bool = True):
         super().__init__()
-        self.bn0   = nn.BatchNorm2d(in_ch)
+        self.bn1   = nn.BatchNorm2d(in_ch)          # pre-activation BN (called bn1 in ONNX)
         self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=1, padding=1, bias=False)
-        self.bn1   = nn.BatchNorm2d(out_ch)
-        self.act   = nn.PReLU(out_ch)
+        self.prelu = nn.PReLU(out_ch)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, stride=stride, padding=1, bias=False)
         self.bn2   = nn.BatchNorm2d(out_ch)
-        self.se: nn.Module = SEBlock(out_ch) if use_se else nn.Identity()
+        self.se    = SEBlock(out_ch) if use_se else nn.Identity()
 
         if stride != 1 or in_ch != out_ch:
             self.shortcut: nn.Module = nn.Sequential(
@@ -69,14 +54,14 @@ class IRBlock(nn.Module):
             self.shortcut = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.conv1(self.bn0(x))
-        out = self.act(self.bn1(out))
+        out = self.conv1(self.bn1(x))
+        out = self.prelu(out)
         out = self.bn2(self.conv2(out))
         out = self.se(out)
         return out + self.shortcut(x)
 
 
-def _make_stage(in_ch: int, out_ch: int, n_blocks: int, stride: int, use_se: bool) -> nn.Sequential:
+def _make_stage(in_ch, out_ch, n_blocks, stride, use_se):
     layers = [IRBlock(in_ch, out_ch, stride=stride, use_se=use_se)]
     for _ in range(1, n_blocks):
         layers.append(IRBlock(out_ch, out_ch, stride=1, use_se=use_se))
@@ -88,40 +73,30 @@ def _make_stage(in_ch: int, out_ch: int, n_blocks: int, stride: int, use_se: boo
 # ──────────────────────────────────────────────────────────────────────────────
 
 class IResNet100(nn.Module):
-    """iResNet100 (IR-SE-100) backbone for face recognition.
-
-    Stage block counts: [3, 13, 30, 3]  — total ≈ 100 layers.
-
-    Parameters
-    ----------
-    embedding_size : int
-        Dimension of the output embedding vector (default 512).
-    use_se : bool
-        Enable Squeeze-and-Excitation blocks (default True).
-    dropout : float
-        Dropout probability in the output head (default 0.4).
-    """
+    """iResNet100 matching InsightFace ONNX layout."""
 
     _STAGE_BLOCKS = (3, 13, 30, 3)
 
     def __init__(self, embedding_size: int = 512, use_se: bool = True, dropout: float = 0.4):
         super().__init__()
+        # Stem — named to match ONNX conv0 + features_stem area
         self.stem = nn.Sequential(
             nn.Conv2d(3, 64, 3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.PReLU(64),
         )
-        self.stage1 = _make_stage(64,  64,  self._STAGE_BLOCKS[0], stride=2, use_se=use_se)
-        self.stage2 = _make_stage(64,  128, self._STAGE_BLOCKS[1], stride=2, use_se=use_se)
-        self.stage3 = _make_stage(128, 256, self._STAGE_BLOCKS[2], stride=2, use_se=use_se)
-        self.stage4 = _make_stage(256, 512, self._STAGE_BLOCKS[3], stride=2, use_se=use_se)
-        self.output_head = nn.Sequential(
-            nn.BatchNorm2d(512),
-            nn.Dropout(p=dropout),
-            nn.Flatten(),
-            nn.Linear(512 * 7 * 7, embedding_size, bias=False),
-            nn.BatchNorm1d(embedding_size),
-        )
+        # Stages — named layer1..layer4 to match ONNX BN keys
+        self.layer1 = _make_stage(64,  64,  self._STAGE_BLOCKS[0], stride=2, use_se=use_se)
+        self.layer2 = _make_stage(64,  128, self._STAGE_BLOCKS[1], stride=2, use_se=use_se)
+        self.layer3 = _make_stage(128, 256, self._STAGE_BLOCKS[2], stride=2, use_se=use_se)
+        self.layer4 = _make_stage(256, 512, self._STAGE_BLOCKS[3], stride=2, use_se=use_se)
+        # Output head — named to match ONNX: features (BN), bn2 (BN1d), fc (Linear)
+        self.features = nn.BatchNorm2d(512)
+        self.dropout  = nn.Dropout(p=dropout)
+        self.flatten  = nn.Flatten()
+        self.fc       = nn.Linear(512 * 7 * 7, embedding_size, bias=False)
+        self.bn2      = nn.BatchNorm1d(embedding_size)
+
         self._init_weights()
 
     def _init_weights(self):
@@ -138,13 +113,16 @@ class IResNet100(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        x = self.stage1(x)
-        x = self.stage2(x)
-        x = self.stage3(x)
-        x = self.stage4(x)
-        return self.output_head(x)
-
-
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.features(x)
+        x = self.dropout(x)
+        x = self.flatten(x)
+        x = self.fc(x)
+        x = self.bn2(x)
+        return x
 # ──────────────────────────────────────────────────────────────────────────────
 # ArcFace loss head
 # ──────────────────────────────────────────────────────────────────────────────

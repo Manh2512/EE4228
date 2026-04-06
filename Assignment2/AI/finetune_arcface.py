@@ -19,6 +19,7 @@ Outputs written to <output_dir>/:
     checkpoint_epoch_NNNN.pt   — periodic checkpoints
     best_model.pt              — lowest validation-loss checkpoint
     final_model.pt             — weights after the last epoch
+    loss_curve.png             — combined train/validation loss plot
     finetune.log               — full training log (INFO→stdout, DEBUG→file)
 
 Pre-trained weight loading
@@ -51,6 +52,9 @@ import time
 from pathlib import Path
 
 import cv2
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -262,6 +266,67 @@ def setup_logger(log_file: Path) -> logging.Logger:
     return logger
 
 
+def export_onnx(
+    backbone: IResNet100,
+    output_dir: Path,
+    logger: logging.Logger,
+) -> None:
+    """Export fine-tuned backbone to ONNX format.
+
+    The exported model accepts a (1, 3, 112, 112) input blob and outputs
+    a (1, 512) L2-normalized embedding. Compatible with ArcFaceRecognizer.
+    """
+    # Use absolute path to ensure .data file reference works correctly
+    onnx_path = (output_dir / 'backbone.onnx').resolve()
+
+    # Dummy input: (batch, C, H, W)
+    device = next(backbone.parameters()).device
+    dummy_input = torch.randn(1, 3, 112, 112, device=device)
+
+    try:
+        torch.onnx.export(
+            backbone,
+            dummy_input,
+            str(onnx_path),
+            input_names=['input'],
+            output_names=['output'],
+            opset_version=14,
+            do_constant_folding=True,
+            verbose=False,
+        )
+        logger.info(f"ONNX backbone exported: {onnx_path}")
+    except Exception as e:
+        logger.error(f"ONNX export failed: {e}")
+
+
+def save_loss_curve(
+    output_dir: Path,
+    train_losses: list[float],
+    val_losses: list[float],
+    logger: logging.Logger,
+) -> None:
+    """Save a single train/validation loss curve image."""
+    if not train_losses or not val_losses:
+        logger.warning("Skipping loss curve plot because no loss history is available")
+        return
+
+    epochs = range(1, min(len(train_losses), len(val_losses)) + 1)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(list(epochs), train_losses[:len(epochs)], label='Train loss', linewidth=2)
+    ax.plot(list(epochs), val_losses[:len(epochs)], label='Val loss', linewidth=2)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Loss')
+    ax.set_title('ArcFace Fine-tuning Loss')
+    ax.grid(True, linestyle='--', alpha=0.35)
+    ax.legend()
+    fig.tight_layout()
+
+    plot_path = output_dir / 'loss_curve.png'
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    logger.info(f"Loss curve saved: {plot_path}")
+
+
 def load_pretrained(
     backbone: IResNet100,
     path: Path,
@@ -287,37 +352,30 @@ def load_pretrained(
         return
 
     if suffix == '.onnx':
-        try:
-            import onnx
-            from onnx2torch import convert
-        except ImportError:
-            logger.warning(
-                "onnx2torch not installed — ONNX weight transfer skipped. "
-                "Install with:  pip install onnx2torch"
-            )
-            return
-        try:
-            logger.info(f"Converting ONNX → PyTorch for weight transfer: {path}")
-            onnx_model  = onnx.load(str(path))
-            torch_model = convert(onnx_model)
-            onnx_sd     = torch_model.state_dict()
-            own_sd      = backbone.state_dict()
-            matched, skipped = 0, 0
-            new_sd: dict = {}
-            for k, v in own_sd.items():
-                if k in onnx_sd and onnx_sd[k].shape == v.shape:
-                    new_sd[k] = onnx_sd[k]
-                    matched += 1
-                else:
-                    new_sd[k] = v
-                    skipped += 1
-            backbone.load_state_dict(new_sd)
-            logger.info(
-                f"ONNX weight transfer: {matched} matched, "
-                f"{skipped} skipped (shape mismatch or name not found)"
-            )
-        except Exception as exc:
-            logger.warning(f"ONNX weight transfer failed ({exc}) — using random init")
+        import onnx
+        from onnx import numpy_helper
+
+        onnx_model = onnx.load(str(path))
+        onnx_sd = {
+            init.name: torch.tensor(numpy_helper.to_array(init))
+            for init in onnx_model.graph.initializer
+        }
+
+        own_sd  = backbone.state_dict()
+        new_sd  = {}
+        matched = 0
+        skipped = 0
+
+        for k, v in own_sd.items():
+            if k in onnx_sd and onnx_sd[k].shape == v.shape:
+                new_sd[k] = onnx_sd[k]
+                matched += 1
+            else:
+                new_sd[k] = v
+                skipped += 1
+
+        backbone.load_state_dict(new_sd)
+        logger.info(f"ONNX weight transfer: {matched} matched, {skipped} skipped")
         return
 
     logger.warning(f"Unknown pretrained file extension '{suffix}' — skipping")
@@ -453,7 +511,7 @@ def run(args: argparse.Namespace) -> None:
         load_pretrained(backbone, Path(args.pretrained), device, logger)
 
     # ── Freeze stem + stage1–3; train only stage4, output_head, and head ─────
-    for module in (backbone.stem, backbone.stage1, backbone.stage2, backbone.stage3):
+    for module in (backbone.stem, backbone.layer1, backbone.layer2, backbone.layer3):
         for p in module.parameters():
             p.requires_grad = False
 
@@ -497,6 +555,8 @@ def run(args: argparse.Namespace) -> None:
     # ── Resume ───────────────────────────────────────────────────────────────
     start_epoch   = 1
     best_val_loss = float('inf')
+    train_history: list[float] = []
+    val_history: list[float] = []
 
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
@@ -507,6 +567,8 @@ def run(args: argparse.Namespace) -> None:
             scheduler.load_state_dict(ckpt['scheduler'])
         start_epoch   = ckpt['epoch'] + 1
         best_val_loss = ckpt.get('best_val_loss', float('inf'))
+        train_history = list(ckpt.get('train_history', []))
+        val_history   = list(ckpt.get('val_history', []))
         logger.info(f"Resumed from {args.resume} (next epoch: {start_epoch})")
 
     # ── Training loop ────────────────────────────────────────────────────────
@@ -570,6 +632,9 @@ def run(args: argparse.Namespace) -> None:
         val_loss = epoch_val_loss / max(n_val, 1)
         elapsed  = time.time() - t0
 
+        train_history.append(train_loss)
+        val_history.append(val_loss)
+
         if scheduler is not None:
             scheduler.step()
 
@@ -590,6 +655,8 @@ def run(args: argparse.Namespace) -> None:
             'scheduler':     scheduler.state_dict() if scheduler else None,
             'train_loss':    train_loss,
             'val_loss':      val_loss,
+            'train_history': train_history,
+            'val_history':   val_history,
             'best_val_loss': best_val_loss,
             'class_to_idx':  class_to_idx,
             'args':          vars(args),
@@ -613,6 +680,8 @@ def run(args: argparse.Namespace) -> None:
             'backbone':      backbone.state_dict(),
             'head':          head.state_dict(),
             'val_loss':      val_loss,
+            'train_history': train_history,
+            'val_history':   val_history,
             'best_val_loss': best_val_loss,
             'class_to_idx':  class_to_idx,
             'args':          vars(args),
@@ -620,6 +689,12 @@ def run(args: argparse.Namespace) -> None:
         output_dir / 'final_model.pt',
     )
     logger.info(f"Final model saved: {output_dir / 'final_model.pt'}")
+
+    save_loss_curve(output_dir, train_history, val_history, logger)
+
+    if args.export_onnx:
+        logger.info("Exporting backbone to ONNX …")
+        export_onnx(backbone, output_dir, logger)
 
     logger.info("=" * 70)
     logger.info("Training complete")
@@ -672,6 +747,10 @@ def _parse_args() -> argparse.Namespace:
         help='Directory under data/ where aligned chips are also saved for debugging '
              '(set to empty string to disable)',
     )
+    io.add_argument(
+        '--export-onnx', action='store_true',
+        help='Export fine-tuned backbone to ONNX format after training',
+    )
 
     # Detector (preprocessing) ─────────────────────────────────────────────────
     det = P.add_argument_group('Detector (preprocessing)')
@@ -700,8 +779,8 @@ def _parse_args() -> argparse.Namespace:
     # Hyperparameters ──────────────────────────────────────────────────────────
     hp = P.add_argument_group('Hyperparameters')
     hp.add_argument('--epochs',         type=int,   default=30,   help='Training epochs')
-    hp.add_argument('--batch-size',     type=int,   default=32,   help='Mini-batch size')
-    hp.add_argument('--lr',             type=float, default=1e-3, help='Initial learning rate')
+    hp.add_argument('--batch-size',     type=int,   default=16,   help='Mini-batch size')
+    hp.add_argument('--lr',             type=float, default=1e-4, help='Initial learning rate')
     hp.add_argument(
         '--weight-decay', type=float, default=5e-4,
         help='L2 regularisation coefficient (weight decay)',
@@ -736,7 +815,7 @@ def _parse_args() -> argparse.Namespace:
                      help='Disable color jitter')
     aug.add_argument('--aug-random-erasing', action='store_true', default=False,
                      help='Random erasing to simulate partial occlusion')
-    aug.add_argument('--aug-random-crop', action='store_true', default=False,
+    aug.add_argument('--aug-random-crop', action='store_true', default=True,
                      help='RandomResizedCrop (scale 0.85–1.0) instead of plain Resize')
 
     # Runtime ──────────────────────────────────────────────────────────────────
